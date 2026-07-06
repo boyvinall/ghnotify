@@ -40,6 +40,13 @@ func setIcon(active bool) {
 	}
 }
 
+func newSectionHeader(label string) *systray.MenuItem {
+	systray.AddSeparator()
+	m := systray.AddMenuItem(label, "")
+	m.Disable()
+	return m
+}
+
 func onReady(opts Options) func() {
 	return func() {
 		slog.Debug("setting up tray menu")
@@ -58,11 +65,14 @@ func onReady(opts Options) func() {
 		reviewList := newPRList(opts.Config.MaxPRsPerSection, opts.Auth, opts.Snooze, opts.Acknowledge, &opts.Config.Notifications, "Review Requests", enableApprovePR, opts.Poll.ReviewRequests)
 		reviewList.build()
 
-		systray.AddSeparator()
+		newSectionHeader("Items")
 
-		mPrefs := systray.AddMenuItem("Preferences…", "Open config file")
 		mAckAll := systray.AddMenuItem("Acknowledge All", "Dismiss active icon until next change")
 		mClearSnooze := systray.AddMenuItem("Clear Snoozed Items", "Unsnooze all snoozed PRs")
+		mRefresh := systray.AddMenuItem("Refresh Now", "Check GitHub for updates immediately")
+
+		newSectionHeader("App")
+		mPrefs := systray.AddMenuItem("Preferences…", "Open config file")
 		mUpdate := systray.AddMenuItem("Check for updates", "")
 		mQuit := systray.AddMenuItem("Quit", "Quit ghnotify")
 
@@ -100,6 +110,8 @@ func onReady(opts Options) func() {
 					// Proactively recheck so timed snooze expiry reactivates the
 					// icon even when GitHub has no new activity.
 					recheck()
+				case <-mRefresh.ClickedCh:
+					opts.Poll.Refresh()
 				case <-mAckAll.ClickedCh:
 					allPRs := append(opts.Poll.MyPRs(), opts.Poll.ReviewRequests()...)
 					opts.Acknowledge.AcknowledgeAll(allPRs)

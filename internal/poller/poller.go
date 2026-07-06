@@ -22,6 +22,7 @@ type Manager struct {
 
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc // per-server cancel
+	refresh  map[string]chan struct{}      // per-server manual-refresh trigger
 	wg       sync.WaitGroup
 	rootCtx  context.Context
 	rootStop context.CancelFunc
@@ -35,6 +36,7 @@ func NewManager(authMgr *auth.Manager, cfg *config.AppConfig) *Manager {
 		cfg:      cfg,
 		store:    newStateStore(),
 		cancels:  make(map[string]context.CancelFunc),
+		refresh:  make(map[string]chan struct{}),
 		rootCtx:  ctx,
 		rootStop: cancel,
 	}
@@ -79,6 +81,7 @@ func (m *Manager) StopServer(host string) {
 		cancel()
 		delete(m.cancels, host)
 	}
+	delete(m.refresh, host)
 	m.mu.Unlock()
 	m.store.RemoveHost(host)
 }
@@ -89,13 +92,17 @@ func (m *Manager) Stop() {
 	m.wg.Wait()
 }
 
-// PollNow triggers an immediate poll for host without waiting for the next interval.
-func (m *Manager) PollNow(host string) {
-	go func() {
-		ctx, cancel := context.WithTimeout(m.rootCtx, 30*time.Second)
-		defer cancel()
-		m.pollServer(ctx, host)
-	}()
+// Refresh signals every running server loop to poll immediately, bypassing
+// the poll interval timer. Safe to call even if a refresh is already pending.
+func (m *Manager) Refresh() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ch := range m.refresh {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // --- internal ----------------------------------------------------------------
@@ -110,12 +117,14 @@ func (m *Manager) startServer(host string) {
 	slog.Debug("starting server poll loop", "host", host)
 	ctx, cancel := context.WithCancel(m.rootCtx)
 	m.cancels[host] = cancel
+	refresh := make(chan struct{}, 1)
+	m.refresh[host] = refresh
 
 	m.wg.Add(1)
-	go m.runServerLoop(ctx, host)
+	go m.runServerLoop(ctx, host, refresh)
 }
 
-func (m *Manager) runServerLoop(ctx context.Context, host string) {
+func (m *Manager) runServerLoop(ctx context.Context, host string, refresh <-chan struct{}) {
 	defer m.wg.Done()
 
 	interval := m.pollInterval()
@@ -129,6 +138,9 @@ func (m *Manager) runServerLoop(ctx context.Context, host string) {
 		case <-ctx.Done():
 			slog.Debug("poll loop stopped", "host", host)
 			return
+		case <-refresh:
+			slog.Debug("manual refresh requested", "host", host)
+			m.pollServer(ctx, host)
 		case <-time.After(jitter(interval)):
 			slog.Debug("poll interval elapsed", "host", host)
 			m.pollServer(ctx, host)
