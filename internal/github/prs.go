@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,78 @@ func (c *Client) FetchReviewRequests(ctx context.Context, since time.Time) ([]PR
 	return c.searchPRs(ctx, "is:pr is:open review-requested:@me archived:false", since)
 }
 
+// FetchSubscribedPRs returns all open PRs the authenticated user is
+// subscribed to (watching for activity) but neither authored nor is a
+// requested reviewer for. This uses the notifications API rather than
+// search, since GitHub search has no "subscribed" qualifier.
+// since, if non-zero, restricts results to notifications updated at or
+// after that time.
+func (c *Client) FetchSubscribedPRs(ctx context.Context, since time.Time) ([]PR, error) {
+	opts := &ghapi.NotificationListOptions{
+		All:         true,
+		ListOptions: ghapi.ListOptions{PerPage: 100},
+	}
+	if !since.IsZero() {
+		opts.Since = since
+	}
+	slog.Debug("listing notifications", "host", c.host)
+	notifications, _, err := c.inner.Activity.ListNotifications(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	slog.Debug("notifications returned", "host", c.host, "count", len(notifications))
+
+	seen := make(map[string]struct{})
+	var refs []prRef
+	for _, n := range notifications {
+		if n.GetReason() != "subscribed" || n.GetSubject().GetType() != "PullRequest" {
+			continue
+		}
+		owner := n.GetRepository().GetOwner().GetLogin()
+		repo := n.GetRepository().GetName()
+		number := parseTrailingNumber(n.GetSubject().GetURL())
+		if owner == "" || repo == "" || number == 0 {
+			continue
+		}
+		key := owner + "/" + repo + "#" + strconv.Itoa(number)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, prRef{owner: owner, repo: repo, number: number})
+	}
+
+	prs := c.fetchPRRefs(ctx, refs)
+	out := prs[:0]
+	for _, pr := range prs {
+		if pr.IsOpen && !c.isExcludedAuthor(pr.Author) {
+			out = append(out, pr)
+		}
+	}
+	return out, nil
+}
+
+// parseTrailingNumber returns the integer after the last "/" in s, or 0 if
+// there isn't one. Used to pull a PR number off a notification subject URL.
+func parseTrailingNumber(s string) int {
+	i := strings.LastIndex(s, "/")
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(s[i+1:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// prRef identifies a pull request to fetch detail for.
+type prRef struct {
+	owner  string
+	repo   string
+	number int
+}
+
 func (c *Client) searchPRs(ctx context.Context, query string, since time.Time) ([]PR, error) {
 	if c.excludeQuery != "" {
 		query += " " + c.excludeQuery
@@ -43,37 +116,49 @@ func (c *Client) searchPRs(ctx context.Context, query string, since time.Time) (
 	}
 	slog.Debug("search returned issues", "host", c.host, "count", result.GetTotal())
 
+	refs := make([]prRef, 0, len(result.Issues))
+	for _, issue := range result.Issues {
+		owner, repo := parseOwnerRepo(issue.GetRepositoryURL())
+		if owner == "" {
+			continue
+		}
+		refs = append(refs, prRef{owner: owner, repo: repo, number: issue.GetNumber()})
+	}
+
+	return c.fetchPRRefs(ctx, refs), nil
+}
+
+// fetchPRRefs fetches full detail for each ref concurrently (bounded by
+// maxConcurrentPRs) and returns the results in the same order as refs,
+// skipping any that failed to fetch.
+func (c *Client) fetchPRRefs(ctx context.Context, refs []prRef) []PR {
 	type entry struct {
 		pr  *PR
 		idx int
 	}
 
 	sem := make(chan struct{}, maxConcurrentPRs)
-	ch := make(chan entry, len(result.Issues))
+	ch := make(chan entry, len(refs))
 	var wg sync.WaitGroup
 
-	for i, issue := range result.Issues {
-		owner, repo := parseOwnerRepo(issue.GetRepositoryURL())
-		if owner == "" {
-			continue
-		}
+	for i, ref := range refs {
 		wg.Add(1)
-		go func(idx int, issue *ghapi.Issue, owner, repo string) {
+		go func(idx int, ref prRef) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			slog.Debug("fetching PR detail", "host", c.host, "owner", owner, "repo", repo, "number", issue.GetNumber())
-			pr, err := c.fetchPRDetail(ctx, owner, repo, issue)
+			slog.Debug("fetching PR detail", "host", c.host, "owner", ref.owner, "repo", ref.repo, "number", ref.number)
+			pr, err := c.fetchPRDetail(ctx, ref.owner, ref.repo, ref.number)
 			if err != nil {
-				slog.Warn("fetch PR detail failed", "owner", owner, "repo", repo, "number", issue.GetNumber(), "err", err)
+				slog.Warn("fetch PR detail failed", "owner", ref.owner, "repo", ref.repo, "number", ref.number, "err", err)
 				return
 			}
 
 			slog.Debug("fetched PR detail",
 				"host", c.host,
-				"owner", owner,
-				"repo", repo,
+				"owner", ref.owner,
+				"repo", ref.repo,
 				"number", pr.Number,
 				"title", pr.Title,
 				"draft", pr.IsDraft,
@@ -81,7 +166,7 @@ func (c *Client) searchPRs(ctx context.Context, query string, since time.Time) (
 				"review", pr.ReviewState)
 
 			ch <- entry{pr, idx}
-		}(i, issue, owner, repo)
+		}(i, ref)
 	}
 
 	go func() {
@@ -89,8 +174,8 @@ func (c *Client) searchPRs(ctx context.Context, query string, since time.Time) (
 		close(ch)
 	}()
 
-	// Collect and re-order by original search rank.
-	ordered := make([]*PR, len(result.Issues))
+	// Collect and re-order by original ref order.
+	ordered := make([]*PR, len(refs))
 	for e := range ch {
 		ordered[e.idx] = e.pr
 	}
@@ -100,18 +185,15 @@ func (c *Client) searchPRs(ctx context.Context, query string, since time.Time) (
 			prs = append(prs, *pr)
 		}
 	}
-	return prs, nil
+	return prs
 }
 
 // FetchPRDetail fetches full detail for a single PR by number.
 func (c *Client) FetchPRDetail(ctx context.Context, owner, repo string, number int) (*PR, error) {
-	issue := &ghapi.Issue{Number: &number}
-	return c.fetchPRDetail(ctx, owner, repo, issue)
+	return c.fetchPRDetail(ctx, owner, repo, number)
 }
 
-func (c *Client) fetchPRDetail(ctx context.Context, owner, repo string, issue *ghapi.Issue) (*PR, error) {
-	number := issue.GetNumber()
-
+func (c *Client) fetchPRDetail(ctx context.Context, owner, repo string, number int) (*PR, error) {
 	// Fetch PR metadata and review list concurrently — neither depends on the other.
 	var ghPR *ghapi.PullRequest
 	var reviews []*ghapi.PullRequestReview
@@ -147,6 +229,7 @@ func (c *Client) fetchPRDetail(ctx context.Context, owner, repo string, issue *g
 		Title:        ghPR.GetTitle(),
 		URL:          ghPR.GetHTMLURL(),
 		Author:       ghPR.GetUser().GetLogin(),
+		IsOpen:       ghPR.GetState() == "open",
 		HeadRef:      ghPR.GetHead().GetRef(),
 		HeadSHA:      sha,
 		IsDraft:      ghPR.GetDraft(),

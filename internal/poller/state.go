@@ -20,41 +20,54 @@ const (
 	ChangeUpdated              // anything else (title, draft flag, etc.)
 )
 
+// Category classifies which PR list a Change belongs to.
+type Category int
+
+const (
+	CategoryMyPR           Category = iota // authored by the user
+	CategoryReviewRequest                  // user is a requested reviewer
+	CategorySubscribed                     // user is subscribed but neither author nor reviewer
+)
+
 // Change describes one PR mutation detected by a poll cycle.
 type Change struct {
 	Kind     ChangeKind
 	PR       github.PR
 	Old      *github.PR // nil for ChangeAdded
-	IsReview bool       // true = review request; false = my PR
+	Category Category
 }
 
 // stateStore keeps the last-known set of PRs for each server and produces a
 // diff on each update.
 type stateStore struct {
-	mu      sync.RWMutex
-	myPRs   map[string]github.PR // key: PR.Key()
-	reviews map[string]github.PR
+	mu         sync.RWMutex
+	myPRs      map[string]github.PR // key: PR.Key()
+	reviews    map[string]github.PR
+	subscribed map[string]github.PR
 }
 
 func newStateStore() *stateStore {
 	return &stateStore{
-		myPRs:   make(map[string]github.PR),
-		reviews: make(map[string]github.PR),
+		myPRs:      make(map[string]github.PR),
+		reviews:    make(map[string]github.PR),
+		subscribed: make(map[string]github.PR),
 	}
 }
 
-// Update replaces stored PRs for host with newMyPRs and newReviews and returns
-// the detected changes.
-func (s *stateStore) Update(host string, newMyPRs, newReviews []github.PR) []Change {
+// Update replaces stored PRs for host with newMyPRs, newReviews, and
+// newSubscribed and returns the detected changes.
+func (s *stateStore) Update(host string, newMyPRs, newReviews, newSubscribed []github.PR) []Change {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var changes []Change
-	changes = append(changes, s.diff(s.myPRs, toMap(newMyPRs), host, false)...)
-	changes = append(changes, s.diff(s.reviews, toMap(newReviews), host, true)...)
+	changes = append(changes, s.diff(s.myPRs, toMap(newMyPRs), host, CategoryMyPR)...)
+	changes = append(changes, s.diff(s.reviews, toMap(newReviews), host, CategoryReviewRequest)...)
+	changes = append(changes, s.diff(s.subscribed, toMap(newSubscribed), host, CategorySubscribed)...)
 
 	replaceHost(s.myPRs, host, newMyPRs)
 	replaceHost(s.reviews, host, newReviews)
+	replaceHost(s.subscribed, host, newSubscribed)
 	return changes
 }
 
@@ -72,17 +85,25 @@ func (s *stateStore) ReviewRequests() []github.PR {
 	return mapValues(s.reviews)
 }
 
+// SubscribedPRs returns a snapshot of all currently tracked subscribed PRs.
+func (s *stateStore) SubscribedPRs() []github.PR {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return mapValues(s.subscribed)
+}
+
 // RemoveHost drops all state for host (called when a server is removed).
 func (s *stateStore) RemoveHost(host string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	replaceHost(s.myPRs, host, nil)
 	replaceHost(s.reviews, host, nil)
+	replaceHost(s.subscribed, host, nil)
 }
 
 // --- helpers -----------------------------------------------------------------
 
-func (s *stateStore) diff(stored, incoming map[string]github.PR, host string, isReview bool) []Change {
+func (s *stateStore) diff(stored, incoming map[string]github.PR, host string, category Category) []Change {
 	var changes []Change
 	// Added: in incoming but not in stored (for this host).
 	for key, pr := range incoming {
@@ -90,7 +111,7 @@ func (s *stateStore) diff(stored, incoming map[string]github.PR, host string, is
 			continue
 		}
 		if _, exists := stored[key]; !exists {
-			changes = append(changes, Change{Kind: ChangeAdded, PR: pr, IsReview: isReview})
+			changes = append(changes, Change{Kind: ChangeAdded, PR: pr, Category: category})
 		}
 	}
 	// Removed or updated: in stored for this host.
@@ -100,12 +121,12 @@ func (s *stateStore) diff(stored, incoming map[string]github.PR, host string, is
 		}
 		newPR, exists := incoming[key]
 		if !exists {
-			changes = append(changes, Change{Kind: ChangeRemoved, PR: old, IsReview: isReview})
+			changes = append(changes, Change{Kind: ChangeRemoved, PR: old, Category: category})
 			continue
 		}
 		if kind := whatChanged(old, newPR); kind != ChangeNone {
 			cp := old
-			changes = append(changes, Change{Kind: kind, PR: newPR, Old: &cp, IsReview: isReview})
+			changes = append(changes, Change{Kind: kind, PR: newPR, Old: &cp, Category: category})
 		}
 	}
 	return changes

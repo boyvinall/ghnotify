@@ -65,6 +65,12 @@ func onReady(opts Options) func() {
 		reviewList := newPRList(opts.Config.MaxPRsPerSection, opts.Auth, opts.Snooze, opts.Acknowledge, &opts.Config.Notifications, "Review Requests", enableApprovePR, opts.Poll.ReviewRequests)
 		reviewList.build()
 
+		systray.AddSeparator()
+
+		// Subscribed section — all slots created BEFORE the separator.
+		subscribedList := newPRList(opts.Config.MaxPRsPerSection, opts.Auth, opts.Snooze, opts.Acknowledge, &opts.Config.Notifications, "Subscribed", enableApprovePR, opts.Poll.SubscribedPRs)
+		subscribedList.build()
+
 		newSectionHeader("Items")
 
 		mAckAll := systray.AddMenuItem("Acknowledge All", "Dismiss active icon until next change")
@@ -91,7 +97,8 @@ func onReady(opts Options) func() {
 		recheck := func() {
 			_, myActive := myList.update()
 			_, revActive := reviewList.update()
-			setIcon(myActive+revActive > 0)
+			_, subActive := subscribedList.update()
+			setIcon(myActive+revActive+subActive > 0)
 		}
 
 		// Subscribe to poll changes.
@@ -114,6 +121,7 @@ func onReady(opts Options) func() {
 					opts.Poll.Refresh()
 				case <-mAckAll.ClickedCh:
 					allPRs := append(opts.Poll.MyPRs(), opts.Poll.ReviewRequests()...)
+					allPRs = append(allPRs, opts.Poll.SubscribedPRs()...)
 					opts.Acknowledge.AcknowledgeAll(allPRs)
 					recheck()
 				case <-mPrefs.ClickedCh:

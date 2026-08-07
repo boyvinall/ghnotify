@@ -52,7 +52,7 @@ func (n *Notifier) format(c poller.Change) (title, body string, ok bool) {
 
 	switch c.Kind {
 	case poller.ChangeAdded:
-		if c.IsReview && n.cfg.NewReviewRequests {
+		if c.Category == poller.CategoryReviewRequest && n.cfg.NewReviewRequests {
 			return repo,
 				fmt.Sprintf("Review requested on #%d: %s", pr.Number, pr.Title),
 				true
@@ -60,14 +60,14 @@ func (n *Notifier) format(c poller.Change) (title, body string, ok bool) {
 
 	case poller.ChangeRemoved:
 		// ChangeRemoved on my PRs means merged or closed.
-		if !c.IsReview && n.cfg.PRMerged {
+		if c.Category == poller.CategoryMyPR && n.cfg.PRMerged {
 			return repo,
 				fmt.Sprintf("#%d closed/merged: %s", pr.Number, pr.Title),
 				true
 		}
 
 	case poller.ChangeReview:
-		if !c.IsReview && n.cfg.PRApproved {
+		if c.Category == poller.CategoryMyPR && n.cfg.PRApproved {
 			switch pr.ReviewState {
 			case github.ReviewApproved:
 				return repo,

@@ -43,6 +43,7 @@ type PR struct {
 	Title        string
 	URL          string
 	Author       string
+	IsOpen       bool
 	IsDraft      bool
 	ReviewState  ReviewState
 	CIStatus     CIStatus

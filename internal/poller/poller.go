@@ -60,6 +60,12 @@ func (m *Manager) ReviewRequests() []github.PR {
 	return filterByAge(m.store.ReviewRequests(), m.prAgeCutoff())
 }
 
+// SubscribedPRs returns a current snapshot of all tracked subscribed PRs,
+// filtered to exclude PRs older than the configured max age.
+func (m *Manager) SubscribedPRs() []github.PR {
+	return filterByAge(m.store.SubscribedPRs(), m.prAgeCutoff())
+}
+
 // Start launches poll goroutines for all gh-authenticated hosts.
 func (m *Manager) Start() {
 	servers := m.authMgr.Servers()
@@ -172,8 +178,13 @@ func (m *Manager) pollServer(ctx context.Context, host string) {
 		slog.Error("poll failed", "host", host, "query", "review requests", "err", err)
 	}
 
-	changes := m.store.Update(host, myPRs, reviews)
-	slog.Debug("poll complete", "host", host, "myPRs", len(myPRs), "reviewRequests", len(reviews), "changes", len(changes))
+	subscribed, err := client.FetchSubscribedPRs(tctx, since)
+	if err != nil {
+		slog.Error("poll failed", "host", host, "query", "subscribed", "err", err)
+	}
+
+	changes := m.store.Update(host, myPRs, reviews, subscribed)
+	slog.Debug("poll complete", "host", host, "myPRs", len(myPRs), "reviewRequests", len(reviews), "subscribed", len(subscribed), "changes", len(changes))
 	if len(changes) > 0 && m.onChange != nil {
 		m.onChange(changes)
 	}

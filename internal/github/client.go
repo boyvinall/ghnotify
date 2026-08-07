@@ -12,9 +12,10 @@ import (
 
 // Client wraps go-github with our host information.
 type Client struct {
-	inner        *ghapi.Client
-	host         string
-	excludeQuery string // pre-built "-author:X -author:Y" fragment
+	inner          *ghapi.Client
+	host           string
+	excludeQuery   string   // pre-built "-author:X -author:Y" fragment
+	excludeAuthors []string // raw list, for client-side filtering (e.g. notifications)
 }
 
 // NewClient returns a token-authenticated client for host.
@@ -40,7 +41,28 @@ func NewClient(host, token string, excludeAuthors []string) *Client {
 			parts = append(parts, "-author:"+a)
 		}
 	}
-	return &Client{inner: inner, host: host, excludeQuery: strings.Join(parts, " ")}
+	return &Client{
+		inner:          inner,
+		host:           host,
+		excludeQuery:   strings.Join(parts, " "),
+		excludeAuthors: excludeAuthors,
+	}
+}
+
+// isExcludedAuthor reports whether login matches one of the configured
+// excluded authors. excludeAuthors entries use GitHub search syntax (e.g.
+// "app/renovate"), but the REST API reports bot logins as "renovate[bot]",
+// so an "app/" prefix is also matched against the "<name>[bot]" form.
+func (c *Client) isExcludedAuthor(login string) bool {
+	for _, a := range c.excludeAuthors {
+		if a == login {
+			return true
+		}
+		if name, ok := strings.CutPrefix(a, "app/"); ok && login == name+"[bot]" {
+			return true
+		}
+	}
+	return false
 }
 
 // IsUnauthorized reports whether err is a 401 from the GitHub API.
