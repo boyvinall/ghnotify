@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gen2brain/beeep v0.11.2
 	github.com/getlantern/systray v1.2.2
 	github.com/google/go-github/v72 v72.0.0

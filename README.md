@@ -91,7 +91,14 @@ ci_status_change    = true  # CI result changed on any tracked PR
 new_comments        = true  # comment count changed
 ```
 
-Changes to `config.toml` take effect on restart.
+ghnotify watches `config.toml` and applies changes when you save it.
+A desktop notification lists what changed.
+
+- If the file has an error, ghnotify keeps the previous settings, shows the
+  error in the menu and turns the tray icon amber. Click the error to open the file.
+- `max_prs_per_section` only applies after a restart. The menu shows
+  **Restart to apply config** until you restart or change it back.
+- If the file has an error at startup, ghnotify starts with the default settings.
 
 <!--
 ## Secrets required for CI releases

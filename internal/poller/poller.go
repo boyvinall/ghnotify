@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"math/rand"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 // Manager runs a per-server poll loop and notifies callers of PR state changes.
 type Manager struct {
 	authMgr *auth.Manager
-	cfg     *config.AppConfig
+	cfg     *config.Store
 	store   *stateStore
 
 	onChange func([]Change)
@@ -29,7 +31,7 @@ type Manager struct {
 }
 
 // NewManager creates a Manager. Call Start() to begin polling.
-func NewManager(authMgr *auth.Manager, cfg *config.AppConfig) *Manager {
+func NewManager(authMgr *auth.Manager, cfg *config.Store) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		authMgr:  authMgr,
@@ -127,28 +129,30 @@ func (m *Manager) startServer(host string) {
 func (m *Manager) runServerLoop(ctx context.Context, host string, refresh <-chan struct{}) {
 	defer m.wg.Done()
 
-	interval := m.pollInterval()
-	slog.Debug("poll loop started", "host", host, "interval", interval)
+	slog.Debug("poll loop started", "host", host, "interval", m.pollInterval())
 
 	// Poll immediately on start.
-	m.pollServer(ctx, host)
+	var lastQuery string
+	m.pollServer(ctx, host, &lastQuery)
 
 	for {
+		// Re-read each cycle so a reloaded poll_interval takes effect.
+		interval := m.pollInterval()
 		select {
 		case <-ctx.Done():
 			slog.Debug("poll loop stopped", "host", host)
 			return
 		case <-refresh:
 			slog.Debug("manual refresh requested", "host", host)
-			m.pollServer(ctx, host)
+			m.pollServer(ctx, host, &lastQuery)
 		case <-time.After(jitter(interval)):
 			slog.Debug("poll interval elapsed", "host", host)
-			m.pollServer(ctx, host)
+			m.pollServer(ctx, host, &lastQuery)
 		}
 	}
 }
 
-func (m *Manager) pollServer(ctx context.Context, host string) {
+func (m *Manager) pollServer(ctx context.Context, host string, lastQuery *string) {
 	token, err := m.authMgr.GetToken(host)
 	if err != nil || token == "" {
 		return // not authenticated; skip silently
@@ -158,33 +162,62 @@ func (m *Manager) pollServer(ctx context.Context, host string) {
 	defer cancel()
 
 	slog.Debug("polling server", "host", host)
-	client := github.NewClient(host, token, m.cfg.ExcludeAuthors)
+	cfg := m.cfg.Get()
+	client := github.NewClient(host, token, cfg.ExcludeAuthors)
 
-	since := m.prAgeCutoff()
+	since := ageCutoff(cfg)
+	query := queryKey(cfg)
+	requeried := *lastQuery != "" && *lastQuery != query
 
-	myPRs, err := client.FetchMyPRs(tctx, since)
-	if err != nil {
-		slog.Error("poll failed", "host", host, "query", "my PRs", "err", err)
+	myPRs, myErr := client.FetchMyPRs(tctx, since)
+	if myErr != nil {
+		slog.Error("poll failed", "host", host, "query", "my PRs", "err", myErr)
 	}
 
-	reviews, err := client.FetchReviewRequests(tctx, since)
-	if err != nil {
-		slog.Error("poll failed", "host", host, "query", "review requests", "err", err)
+	reviews, reviewErr := client.FetchReviewRequests(tctx, since)
+	if reviewErr != nil {
+		slog.Error("poll failed", "host", host, "query", "review requests", "err", reviewErr)
+	}
+
+	if myErr == nil && reviewErr == nil {
+		*lastQuery = query
 	}
 
 	changes := m.store.Update(host, myPRs, reviews)
+	if requeried {
+		changes = dropMembership(changes)
+	}
 	slog.Debug("poll complete", "host", host, "myPRs", len(myPRs), "reviewRequests", len(reviews), "changes", len(changes))
-	if len(changes) > 0 && m.onChange != nil {
+	if (len(changes) > 0 || requeried) && m.onChange != nil {
 		m.onChange(changes)
 	}
 }
 
 func (m *Manager) pollInterval() time.Duration {
-	d, err := time.ParseDuration(m.cfg.PollInterval)
+	d, err := time.ParseDuration(m.cfg.Get().PollInterval)
 	if err != nil || d < 10*time.Second {
 		return 300 * time.Second
 	}
 	return d
+}
+
+// queryKey identifies the settings that decide which PRs a poll returns.
+func queryKey(cfg *config.AppConfig) string {
+	authors := slices.Clone(cfg.ExcludeAuthors)
+	slices.Sort(authors)
+	return strings.Join(authors, "\x00") + "\x01" + cfg.MaxPRAge
+}
+
+// dropMembership removes the changes that only reflect a PR entering or
+// leaving the results, which a changed query causes without any PR event.
+func dropMembership(changes []Change) []Change {
+	out := changes[:0:0]
+	for _, c := range changes {
+		if c.Kind != ChangeAdded && c.Kind != ChangeRemoved {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func jitter(d time.Duration) time.Duration {
@@ -198,7 +231,11 @@ func jitter(d time.Duration) time.Duration {
 // prAgeCutoff returns the earliest UpdatedAt time a PR must have to be shown.
 // Returns zero time if no max age is configured.
 func (m *Manager) prAgeCutoff() time.Time {
-	age := m.cfg.ParseMaxPRAge()
+	return ageCutoff(m.cfg.Get())
+}
+
+func ageCutoff(cfg *config.AppConfig) time.Time {
+	age := cfg.ParseMaxPRAge()
 	if age <= 0 {
 		return time.Time{}
 	}

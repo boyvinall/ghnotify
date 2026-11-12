@@ -25,6 +25,12 @@ func allOn() *config.NotificationConfig {
 	}
 }
 
+func store(n *config.NotificationConfig) *config.Store {
+	cfg := config.Default()
+	cfg.Notifications = *n
+	return config.NewStore(cfg)
+}
+
 func TestFormat(t *testing.T) {
 	approved, changes := testPR(), testPR()
 	approved.ReviewState = github.ReviewApproved
@@ -60,7 +66,7 @@ func TestFormat(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			n := NewNotifier(tt.cfg, nil)
+			n := NewNotifier(store(tt.cfg), nil)
 			title, body, ok := n.format(tt.change)
 			if ok != tt.wantOK || body != tt.wantBody {
 				t.Fatalf("format() = (%q, %q, %v), want body %q ok %v", title, body, ok, tt.wantBody, tt.wantOK)
@@ -125,7 +131,7 @@ func TestPostSkipsFallbackWhenNativeSucceeds(t *testing.T) {
 
 func TestDispatch(t *testing.T) {
 	snooze := poller.NewSnoozeStore(filepath.Join(t.TempDir(), "snooze.json"))
-	n := NewNotifier(allOn(), snooze)
+	n := NewNotifier(store(allOn()), snooze)
 
 	t.Run("posts id and url", func(t *testing.T) {
 		natives, _ := stubPost(t, true)
@@ -174,10 +180,21 @@ func TestDispatch(t *testing.T) {
 
 	t.Run("disabled event is silent", func(t *testing.T) {
 		natives, _ := stubPost(t, true)
-		off := NewNotifier(&config.NotificationConfig{}, snooze)
+		off := NewNotifier(store(&config.NotificationConfig{}), snooze)
 		off.dispatch(poller.Change{Kind: poller.ChangeComments, PR: testPR()})
 		if len(*natives) != 0 {
 			t.Fatal("disabled event produced a notification")
 		}
 	})
+}
+
+func TestAppUsesNativePath(t *testing.T) {
+	natives, fallbacks := stubPost(t, true)
+	App("title", "body")
+	if len(*natives) != 1 || len(*fallbacks) != 0 {
+		t.Fatalf("native=%d fallback=%d, want 1 and 0", len(*natives), len(*fallbacks))
+	}
+	if got := (*natives)[0]; got.id != "" || got.title != "title" || got.body != "body" {
+		t.Errorf("native got %+v, want an empty id so each notification is new", got)
+	}
 }

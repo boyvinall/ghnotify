@@ -1,6 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -57,27 +61,78 @@ func Default() *AppConfig {
 	}
 }
 
-// Load reads the config file from disk and decodes it into an AppConfig struct.
-// If the file does not exist, returns a default config and saves it to disk.
-func Load() (*AppConfig, error) {
+// Load reads the config file and returns the config along with the file
+// content it was built from (nil if unknown), as the baseline for Watch.
+// If the file does not exist, it returns and saves the defaults.
+// If the file cannot be read or is invalid, it returns the defaults together
+// with the error, so the app can still start and report the problem.
+func Load() (*AppConfig, []byte, error) {
 	path, err := GetFilePath()
 	if err != nil {
-		return nil, err
+		return Default(), nil, err
 	}
 	slog.Debug("loading config", "path", path)
-	cfg := Default()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		cfg := Default()
 		slog.Debug("config file does not exist, creating default", "path", path)
-		if saveErr := cfg.save(path); saveErr != nil {
+		written, saveErr := cfg.save(path)
+		if saveErr != nil {
 			slog.Warn("could not write default config", "err", saveErr)
 		}
-		return cfg, nil
+		return cfg, written, nil
 	}
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		slog.Warn("could not parse config file", "err", err)
-		return nil, err
+	if err != nil {
+		return Default(), nil, err
 	}
-	return cfg, nil
+	res := Parse(data)
+	if res.Err != nil {
+		slog.Warn("could not load config file, using defaults", "err", res.Err)
+		return Default(), data, res.Err
+	}
+	return res.Config, data, nil
+}
+
+// ParseResult is the outcome of parsing a config file.
+type ParseResult struct {
+	Config  *AppConfig // nil when Err is set
+	Unknown []string   // keys in the file that ghnotify does not recognise
+	Err     error
+}
+
+// Parse decodes data on top of the defaults and validates the result.
+func Parse(data []byte) ParseResult {
+	cfg := Default()
+	md, err := toml.Decode(string(data), cfg)
+	if err != nil {
+		return ParseResult{Err: err}
+	}
+	if err := cfg.Validate(); err != nil {
+		return ParseResult{Err: err}
+	}
+	var unknown []string
+	for _, k := range md.Undecoded() {
+		unknown = append(unknown, k.String())
+	}
+	return ParseResult{Config: cfg, Unknown: unknown}
+}
+
+// Validate reports values that cannot be used at all. Values that parse but
+// are out of range (e.g. a very short poll_interval) are still clamped by
+// their consumers, as before.
+func (c *AppConfig) Validate() error {
+	if _, err := time.ParseDuration(c.PollInterval); err != nil {
+		return fmt.Errorf("poll_interval: %w", err)
+	}
+	if c.MaxPRAge != "" {
+		if _, err := time.ParseDuration(c.MaxPRAge); err != nil {
+			return fmt.Errorf("max_pr_age: %w", err)
+		}
+	}
+	if c.MaxPRsPerSection < 1 {
+		return fmt.Errorf("max_prs_per_section: must be at least 1, got %d", c.MaxPRsPerSection)
+	}
+	return nil
 }
 
 // Save writes the AppConfig to disk at the default config file path.
@@ -86,20 +141,22 @@ func (c *AppConfig) Save() error {
 	if err != nil {
 		return err
 	}
-	return c.save(path)
+	_, err = c.save(path)
+	return err
 }
 
-func (c *AppConfig) save(path string) error {
+// save writes the config to path and returns the bytes it wrote, or nil if
+// the write failed.
+func (c *AppConfig) save(path string) ([]byte, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return nil, err
 	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return nil, err
 	}
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
-		_ = f.Close()
-		return err
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		return nil, err
 	}
-	return f.Close()
+	return buf.Bytes(), nil
 }

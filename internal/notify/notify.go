@@ -15,14 +15,14 @@ import (
 
 // Notifier fires OS notifications for PR changes that the user has opted into.
 type Notifier struct {
-	cfg    *config.NotificationConfig
+	cfg    *config.Store
 	snooze *poller.SnoozeStore
 }
 
-// NewNotifier creates a Notifier backed by cfg and snooze. cfg may be mutated
-// at runtime (e.g., from Preferences) as long as reads are not concurrent with
-// writes; for v1 this is safe because prefs are only changed at app restart.
-func NewNotifier(cfg *config.NotificationConfig, snooze *poller.SnoozeStore) *Notifier {
+// NewNotifier creates a Notifier backed by cfg and snooze. The notification
+// preferences are read from cfg on every change, so a config reload applies
+// immediately.
+func NewNotifier(cfg *config.Store, snooze *poller.SnoozeStore) *Notifier {
 	return &Notifier{cfg: cfg, snooze: snooze}
 }
 
@@ -64,11 +64,12 @@ func post(id, title, body, url string) {
 
 func (n *Notifier) format(c poller.Change) (title, body string, ok bool) {
 	pr := c.PR
+	prefs := n.cfg.Get().Notifications
 	repo := fmt.Sprintf("%s › %s/%s", pr.Server, pr.Owner, pr.Repo)
 
 	switch c.Kind {
 	case poller.ChangeAdded:
-		if c.IsReview && n.cfg.NewReviewRequests {
+		if c.IsReview && prefs.NewReviewRequests {
 			return repo,
 				fmt.Sprintf("Review requested on #%d: %s", pr.Number, pr.Title),
 				true
@@ -76,14 +77,14 @@ func (n *Notifier) format(c poller.Change) (title, body string, ok bool) {
 
 	case poller.ChangeRemoved:
 		// ChangeRemoved on my PRs means merged or closed.
-		if !c.IsReview && n.cfg.PRMerged {
+		if !c.IsReview && prefs.PRMerged {
 			return repo,
 				fmt.Sprintf("#%d closed/merged: %s", pr.Number, pr.Title),
 				true
 		}
 
 	case poller.ChangeReview:
-		if !c.IsReview && n.cfg.PRApproved {
+		if !c.IsReview && prefs.PRApproved {
 			switch pr.ReviewState {
 			case github.ReviewApproved:
 				return repo,
@@ -97,14 +98,14 @@ func (n *Notifier) format(c poller.Change) (title, body string, ok bool) {
 		}
 
 	case poller.ChangeCIStatus:
-		if n.cfg.CIStatusChange {
+		if prefs.CIStatusChange {
 			return repo,
 				fmt.Sprintf("#%d CI %s — %s", pr.Number, ciLabel(pr.CIStatus), pr.Title),
 				true
 		}
 
 	case poller.ChangeComments:
-		if n.cfg.NewComments {
+		if prefs.NewComments {
 			return repo,
 				fmt.Sprintf("#%d new activity — %s", pr.Number, pr.Title),
 				true
@@ -124,4 +125,11 @@ func ciLabel(s github.CIStatus) string {
 	default:
 		return "unknown"
 	}
+}
+
+// App posts a notification about ghnotify itself, such as a config reload.
+// It is not gated by any preference: these only fire after the user acts.
+// It blocks until the notification is posted or times out.
+func App(title, body string) {
+	post("", title, body, "")
 }

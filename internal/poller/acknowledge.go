@@ -42,15 +42,50 @@ func (s *AcknowledgeStore) AcknowledgeAll(prs []github.PR) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, pr := range prs {
-		s.entries[pr.Key()] = AcknowledgeSnapshot{
-			HeadSHA:      pr.HeadSHA,
-			ReviewState:  pr.ReviewState,
-			CIStatus:     pr.CIStatus,
-			CommentCount: pr.CommentCount,
-			IsDraft:      pr.IsDraft,
-		}
+		s.entries[pr.Key()] = snapshotOf(pr)
 	}
 	s.save()
+}
+
+func snapshotOf(pr github.PR) AcknowledgeSnapshot {
+	return AcknowledgeSnapshot{
+		HeadSHA:      pr.HeadSHA,
+		ReviewState:  pr.ReviewState,
+		CIStatus:     pr.CIStatus,
+		CommentCount: pr.CommentCount,
+		IsDraft:      pr.IsDraft,
+	}
+}
+
+func (snap AcknowledgeSnapshot) differsFrom(pr github.PR, cfg *config.NotificationConfig) bool {
+	return snap.HeadSHA != pr.HeadSHA ||
+		snap.IsDraft != pr.IsDraft ||
+		(cfg.PRApproved && snap.ReviewState != pr.ReviewState) ||
+		(cfg.CIStatusChange && snap.CIStatus != pr.CIStatus) ||
+		(cfg.NewComments && snap.CommentCount != pr.CommentCount)
+}
+
+// Rebaseline re-snapshots every PR in prs that is acknowledged under cfg.
+// Call it before the notification preferences change, so a field that was
+// ignored until now does not suddenly count as a change and clear the
+// acknowledgment.
+func (s *AcknowledgeStore) Rebaseline(prs []github.PR, cfg *config.NotificationConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updated := false
+	for _, pr := range prs {
+		snap, ok := s.entries[pr.Key()]
+		if !ok || snap.differsFrom(pr, cfg) {
+			continue
+		}
+		if now := snapshotOf(pr); now != snap {
+			s.entries[pr.Key()] = now
+			updated = true
+		}
+	}
+	if updated {
+		s.save()
+	}
 }
 
 // IsAcknowledged reports whether pr is still acknowledged. It auto-clears the
@@ -64,12 +99,7 @@ func (s *AcknowledgeStore) IsAcknowledged(pr github.PR, cfg *config.Notification
 	if !ok {
 		return false
 	}
-	changed := snap.HeadSHA != pr.HeadSHA ||
-		snap.IsDraft != pr.IsDraft ||
-		(cfg.PRApproved && snap.ReviewState != pr.ReviewState) ||
-		(cfg.CIStatusChange && snap.CIStatus != pr.CIStatus) ||
-		(cfg.NewComments && snap.CommentCount != pr.CommentCount)
-	if changed {
+	if snap.differsFrom(pr, cfg) {
 		delete(s.entries, pr.Key())
 		s.save()
 		return false
