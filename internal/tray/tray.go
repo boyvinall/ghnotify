@@ -50,17 +50,30 @@ func onReady(opts Options) func() {
 		status.render()
 		systray.SetTooltip("ghnotify — GitHub PR monitor")
 
+		var myList, reviewList *prList
+
+		// recheck re-renders both PR lists and updates the icon. Called on every
+		// poll change and on the 60-second ticker to catch snooze expiry.
+		var recheckMu sync.Mutex
+		recheck := func() {
+			recheckMu.Lock()
+			defer recheckMu.Unlock()
+			_, myActive := myList.update()
+			_, revActive := reviewList.update()
+			status.setActivity(myActive+revActive > 0)
+		}
+
 		// My PRs section — all slots created BEFORE the separator.
 		// Menu slots are created once, so max_prs_per_section needs a restart.
 		maxPRs := opts.Config.Get().MaxPRsPerSection
-		myList := newPRList(maxPRs, opts.Auth, opts.Snooze, opts.Acknowledge, opts.Config, "My Pull Requests", false, opts.Poll.MyPRs)
+		myList = newPRList(maxPRs, opts.Auth, opts.Snooze, opts.Acknowledge, opts.Config, "My Pull Requests", false, opts.Poll.MyPRs, recheck)
 		myList.build()
 
 		systray.AddSeparator()
 
 		// Review Requests section — all slots created BEFORE the separator.
 		enableApprovePR := false
-		reviewList := newPRList(maxPRs, opts.Auth, opts.Snooze, opts.Acknowledge, opts.Config, "Review Requests", enableApprovePR, opts.Poll.ReviewRequests)
+		reviewList = newPRList(maxPRs, opts.Auth, opts.Snooze, opts.Acknowledge, opts.Config, "Review Requests", enableApprovePR, opts.Poll.ReviewRequests, recheck)
 		reviewList.build()
 
 		newSectionHeader("Items")
@@ -86,17 +99,6 @@ func onReady(opts Options) func() {
 			latestURL = downloadURL
 			mUpdate.SetTitle(fmt.Sprintf("Update available: %s  →", tag))
 		})
-
-		// recheck re-renders both PR lists and updates the icon. Called on every
-		// poll change and on the 60-second ticker to catch snooze expiry.
-		var recheckMu sync.Mutex
-		recheck := func() {
-			recheckMu.Lock()
-			defer recheckMu.Unlock()
-			_, myActive := myList.update()
-			_, revActive := reviewList.update()
-			status.setActivity(myActive+revActive > 0)
-		}
 
 		// Apply config.toml edits as they are saved.
 		reloader := &configReloader{store: opts.Config, status: status, builtAt: maxPRs, refresh: opts.Poll.Refresh, recheck: recheck,
