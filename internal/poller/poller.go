@@ -132,7 +132,7 @@ func (m *Manager) runServerLoop(ctx context.Context, host string, refresh <-chan
 	slog.Debug("poll loop started", "host", host, "interval", m.pollInterval())
 
 	// Poll immediately on start.
-	var lastQuery string
+	var lastQuery appliedQuery
 	m.pollServer(ctx, host, &lastQuery)
 
 	for {
@@ -152,7 +152,7 @@ func (m *Manager) runServerLoop(ctx context.Context, host string, refresh <-chan
 	}
 }
 
-func (m *Manager) pollServer(ctx context.Context, host string, lastQuery *string) {
+func (m *Manager) pollServer(ctx context.Context, host string, lastQuery *appliedQuery) {
 	token, err := m.authMgr.GetToken(host)
 	if err != nil || token == "" {
 		return // not authenticated; skip silently
@@ -167,7 +167,6 @@ func (m *Manager) pollServer(ctx context.Context, host string, lastQuery *string
 
 	since := ageCutoff(cfg)
 	query := queryKey(cfg)
-	requeried := *lastQuery != "" && *lastQuery != query
 
 	myPRs, myErr := client.FetchMyPRs(tctx, since)
 	if myErr != nil {
@@ -179,15 +178,18 @@ func (m *Manager) pollServer(ctx context.Context, host string, lastQuery *string
 		slog.Error("poll failed", "host", host, "query", "review requests", "err", reviewErr)
 	}
 
-	if myErr == nil && reviewErr == nil {
-		*lastQuery = query
+	var myUpdate, reviewUpdate *[]github.PR
+	if myErr == nil {
+		myUpdate = &myPRs
 	}
+	if reviewErr == nil {
+		reviewUpdate = &reviews
+	}
+	myRequeried, reviewRequeried := lastQuery.apply(query, myErr == nil, reviewErr == nil)
+	requeried := myRequeried || reviewRequeried
 
-	changes := m.store.Update(host, myPRs, reviews)
-	if requeried {
-		changes = dropMembership(changes)
-	}
-	slog.Debug("poll complete", "host", host, "myPRs", len(myPRs), "reviewRequests", len(reviews), "changes", len(changes))
+	changes := dropRequeriedMembership(m.store.Update(host, myUpdate, reviewUpdate), myRequeried, reviewRequeried)
+	slog.Debug("poll complete", "host", host, "myPRsApplied", myUpdate != nil, "reviewRequestsApplied", reviewUpdate != nil, "myPRs", len(myPRs), "reviewRequests", len(reviews), "changes", len(changes))
 	if (len(changes) > 0 || requeried) && m.onChange != nil {
 		m.onChange(changes)
 	}
@@ -208,14 +210,34 @@ func queryKey(cfg *config.AppConfig) string {
 	return strings.Join(authors, "\x00") + "\x01" + cfg.MaxPRAge
 }
 
-// dropMembership removes the changes that only reflect a PR entering or
-// leaving the results, which a changed query causes without any PR event.
-func dropMembership(changes []Change) []Change {
-	out := changes[:0:0]
+type appliedQuery struct{ my, reviews string }
+
+func (a *appliedQuery) apply(query string, myOK, reviewOK bool) (myRequeried, reviewRequeried bool) {
+	if myOK {
+		myRequeried = a.my != "" && a.my != query
+		a.my = query
+	}
+	if reviewOK {
+		reviewRequeried = a.reviews != "" && a.reviews != query
+		a.reviews = query
+	}
+	return myRequeried, reviewRequeried
+}
+
+func dropRequeriedMembership(changes []Change, myRequeried, reviewRequeried bool) []Change {
+	if !myRequeried && !reviewRequeried {
+		return changes
+	}
+	var out []Change
 	for _, c := range changes {
-		if c.Kind != ChangeAdded && c.Kind != ChangeRemoved {
-			out = append(out, c)
+		requeried := myRequeried
+		if c.IsReview {
+			requeried = reviewRequeried
 		}
+		if requeried && (c.Kind == ChangeAdded || c.Kind == ChangeRemoved) {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }

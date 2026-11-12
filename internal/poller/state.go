@@ -44,17 +44,20 @@ func newStateStore() *stateStore {
 }
 
 // Update replaces stored PRs for host with newMyPRs and newReviews and returns
-// the detected changes.
-func (s *stateStore) Update(host string, newMyPRs, newReviews []github.PR) []Change {
+// the detected changes. A nil argument leaves that set untouched.
+func (s *stateStore) Update(host string, newMyPRs, newReviews *[]github.PR) []Change {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var changes []Change
-	changes = append(changes, s.diff(s.myPRs, toMap(newMyPRs), host, false)...)
-	changes = append(changes, s.diff(s.reviews, toMap(newReviews), host, true)...)
-
-	replaceHost(s.myPRs, host, newMyPRs)
-	replaceHost(s.reviews, host, newReviews)
+	if newMyPRs != nil {
+		changes = append(changes, s.diff(s.myPRs, toMap(*newMyPRs), host, false)...)
+		replaceHost(s.myPRs, host, *newMyPRs)
+	}
+	if newReviews != nil {
+		changes = append(changes, s.diff(s.reviews, toMap(*newReviews), host, true)...)
+		replaceHost(s.reviews, host, *newReviews)
+	}
 	return changes
 }
 
