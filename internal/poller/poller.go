@@ -183,7 +183,14 @@ func (m *Manager) pollServer(ctx context.Context, host string, lastQuery *string
 		*lastQuery = query
 	}
 
-	changes := m.store.Update(host, myPRs, reviews)
+	var myUpdate, reviewUpdate *[]github.PR
+	if myErr == nil {
+		myUpdate = &myPRs
+	}
+	if reviewErr == nil {
+		reviewUpdate = &reviews
+	}
+	changes := m.store.Update(host, myUpdate, reviewUpdate)
 	if requeried {
 		changes = dropMembership(changes)
 	}
