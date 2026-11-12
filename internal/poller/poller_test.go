@@ -6,14 +6,36 @@ import (
 	"github.com/boyvinall/ghnotify/internal/config"
 )
 
-func TestDropMembership(t *testing.T) {
-	in := []Change{{Kind: ChangeAdded}, {Kind: ChangeRemoved}, {Kind: ChangeCIStatus}, {Kind: ChangeRemoved}}
-	got := dropMembership(in)
-	if len(got) != 1 || got[0].Kind != ChangeCIStatus {
-		t.Fatalf("dropMembership = %+v", got)
+func TestDropRequeriedMembership(t *testing.T) {
+	in := []Change{
+		{Kind: ChangeAdded}, {Kind: ChangeCIStatus},
+		{Kind: ChangeRemoved, IsReview: true}, {Kind: ChangeAdded, IsReview: true},
 	}
-	if len(in) != 4 || in[1].Kind != ChangeRemoved {
+	got := dropRequeriedMembership(in, true, false)
+	if len(got) != 3 || got[0].Kind != ChangeCIStatus || !got[1].IsReview || !got[2].IsReview {
+		t.Fatalf("my set requeried: %+v", got)
+	}
+	if got := dropRequeriedMembership(in, false, false); len(got) != 4 {
+		t.Fatalf("nothing requeried: %+v", got)
+	}
+	if len(in) != 4 || in[0].Kind != ChangeAdded {
 		t.Fatalf("input was modified: %+v", in)
+	}
+}
+
+func TestAppliedQueryTracksEachSet(t *testing.T) {
+	var a appliedQuery
+	if my, rev := a.apply("q1", true, true); my || rev {
+		t.Fatal("first poll must not count as requeried")
+	}
+	if my, rev := a.apply("q2", true, false); !my || rev {
+		t.Fatalf("my=%v rev=%v, want my only", my, rev)
+	}
+	if my, rev := a.apply("q2", true, true); my || !rev {
+		t.Fatalf("my=%v rev=%v, want reviews only", my, rev)
+	}
+	if my, rev := a.apply("q2", true, true); my || rev {
+		t.Fatal("settled query must not count as requeried")
 	}
 }
 
