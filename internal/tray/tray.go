@@ -97,6 +97,8 @@ func onReady(opts Options) func() {
 			_, revActive := reviewList.update()
 			status.setActivity(myActive+revActive > 0)
 		}
+		myList.onSnooze = recheck
+		reviewList.onSnooze = recheck
 
 		// Apply config.toml edits as they are saved.
 		reloader := &configReloader{store: opts.Config, status: status, builtAt: maxPRs, refresh: opts.Poll.Refresh, recheck: recheck,

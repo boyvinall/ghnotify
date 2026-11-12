@@ -30,6 +30,7 @@ type prList struct {
 	cfg         *config.Store
 	prevSnoozed map[string]bool
 	getPRs      getPRsFunc
+	onSnooze    func()
 }
 
 type getPRsFunc func() []github.PR
@@ -57,7 +58,9 @@ func (l *prList) build() {
 	l.slots = make([]*prItem, l.maxItems)
 	for i := range l.slots {
 		l.slots[i] = newPRItem(l.mgr, l.snooze, l.showApprove, func() {
-			l.update() // re-render to reflect new snooze state immediately after snoozing a PR
+			if l.onSnooze != nil {
+				l.onSnooze()
+			}
 		})
 	}
 
