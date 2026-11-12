@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14        # Apple Silicon; CGO + codesign require macOS
+    runs-on: macos-15        # Apple Silicon; CGO + codesign require macOS
     steps:
       - uses: actions/checkout@v4
         with:
