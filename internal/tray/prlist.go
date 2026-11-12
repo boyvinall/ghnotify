@@ -35,7 +35,7 @@ type prList struct {
 
 type getPRsFunc func() []github.PR
 
-func newPRList(maxItems int, mgr *auth.Manager, snooze *poller.SnoozeStore, ack *poller.AcknowledgeStore, cfg *config.Store, label string, showApprove bool, getPRs getPRsFunc) *prList {
+func newPRList(maxItems int, mgr *auth.Manager, snooze *poller.SnoozeStore, ack *poller.AcknowledgeStore, cfg *config.Store, label string, showApprove bool, getPRs getPRsFunc, onSnooze func()) *prList {
 	return &prList{
 		maxItems:    maxItems,
 		label:       label,
@@ -46,6 +46,7 @@ func newPRList(maxItems int, mgr *auth.Manager, snooze *poller.SnoozeStore, ack 
 		cfg:         cfg,
 		prevSnoozed: make(map[string]bool),
 		getPRs:      getPRs,
+		onSnooze:    onSnooze,
 	}
 }
 
@@ -57,11 +58,7 @@ func (l *prList) build() {
 
 	l.slots = make([]*prItem, l.maxItems)
 	for i := range l.slots {
-		l.slots[i] = newPRItem(l.mgr, l.snooze, l.showApprove, func() {
-			if l.onSnooze != nil {
-				l.onSnooze()
-			}
-		})
+		l.slots[i] = newPRItem(l.mgr, l.snooze, l.showApprove, l.onSnooze)
 	}
 
 	l.mMore = systray.AddMenuItem("", "")
