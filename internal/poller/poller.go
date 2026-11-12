@@ -210,11 +210,8 @@ func queryKey(cfg *config.AppConfig) string {
 	return strings.Join(authors, "\x00") + "\x01" + cfg.MaxPRAge
 }
 
-// appliedQuery records, per result set, the query its stored PRs came from.
 type appliedQuery struct{ my, reviews string }
 
-// apply records query for each set that was just applied and reports which
-// of them were last applied under a different query.
 func (a *appliedQuery) apply(query string, myOK, reviewOK bool) (myRequeried, reviewRequeried bool) {
 	if myOK {
 		myRequeried = a.my != "" && a.my != query
@@ -227,8 +224,6 @@ func (a *appliedQuery) apply(query string, myOK, reviewOK bool) (myRequeried, re
 	return myRequeried, reviewRequeried
 }
 
-// dropRequeriedMembership removes the changes that only reflect a PR entering
-// or leaving a set whose query changed, which happens without any PR event.
 func dropRequeriedMembership(changes []Change, myRequeried, reviewRequeried bool) []Change {
 	if !myRequeried && !reviewRequeried {
 		return changes
