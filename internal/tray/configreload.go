@@ -89,26 +89,56 @@ type configReloader struct {
 	// prefs change; it takes the prefs they were acknowledged under.
 	rebaseAck func(old *config.NotificationConfig)
 
-	notifyOnce sync.Once
-	notifyCh   chan [2]string // title, body; drained in order by one goroutine
+	queue notifyQueue
 }
 
-// notify queues a notification. Posting can block for seconds, so it must
-// not hold up a reload, and a single worker keeps the notifications in order.
-func (r *configReloader) notify(title, body string) {
-	r.notifyOnce.Do(func() {
-		r.notifyCh = make(chan [2]string, 16)
+type notification struct{ title, body string }
+
+// notifyQueue posts notifications in order from one worker goroutine. When
+// full, the oldest queued entry is dropped so the latest state always shows.
+type notifyQueue struct {
+	post func(title, body string) // defaults to notify.App
+
+	once sync.Once
+	mu   sync.Mutex // serialises producers so drop-and-enqueue is atomic
+	ch   chan notification
+}
+
+const notifyQueueSize = 16
+
+func (q *notifyQueue) push(n notification) {
+	q.once.Do(func() {
+		q.ch = make(chan notification, notifyQueueSize)
+		post := q.post
+		if post == nil {
+			post = notify.App
+		}
 		go func() {
-			for n := range r.notifyCh {
-				notify.App(n[0], n[1])
+			for n := range q.ch {
+				post(n.title, n.body)
 			}
 		}()
 	})
-	select {
-	case r.notifyCh <- [2]string{title, body}:
-	default:
-		slog.Warn("notification queue full, dropping", "title", title)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for {
+		select {
+		case q.ch <- n:
+			return
+		default:
+		}
+		select {
+		case old := <-q.ch:
+			slog.Warn("notification queue full, dropping oldest", "title", old.title)
+		default:
+		}
 	}
+}
+
+// notify queues a notification. Posting can block for seconds, so it must
+// not hold up a reload.
+func (r *configReloader) notify(title, body string) {
+	r.queue.push(notification{title, body})
 }
 
 // startupError reports a config file that could not be loaded at startup.
