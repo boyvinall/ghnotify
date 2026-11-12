@@ -33,6 +33,17 @@ builds:
       - -s -w
       - -X main.version={{.Version}}
 
+  - id: ghnotify-windows
+    main: .
+    binary: ghnotify
+    goos: [windows]
+    goarch: [amd64, arm64]
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -H=windowsgui
+      - -X main.version={{.Version}}
+
 # Combine amd64 + arm64 into a single universal binary.
 # replace:true overwrites both per-arch artifacts with the universal binary.
 universal_binaries:
@@ -46,6 +57,11 @@ archives:
   - ids: [ghnotify-arm64]
     formats: [zip]
     name_template: "{{ .ProjectName }}_darwin_universal"
+
+  - id: windows
+    ids: [ghnotify-windows]
+    formats: [zip]
+    name_template: "{{ .ProjectName }}_windows_{{ .Arch }}"
 
 checksum:
   name_template: checksums.txt

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -157,7 +156,7 @@ func onReady(opts Options) func() {
 					recheck()
 				case <-mUpdate.ClickedCh:
 					if latestURL != "" {
-						_ = exec.Command("open", latestURL).Start()
+						openTarget(latestURL)
 					} else {
 						opts.Updater.CheckNow()
 					}
@@ -179,5 +178,5 @@ func openConfig() {
 	if err != nil {
 		return
 	}
-	_ = exec.Command("open", path).Start()
+	openTarget(path)
 }
