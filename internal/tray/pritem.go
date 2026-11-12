@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -135,11 +134,11 @@ func (it *prItem) listen() {
 		select {
 		case <-it.mItem.ClickedCh:
 			if pr := it.currentPR(); pr != nil {
-				_ = exec.Command("open", pr.URL).Start()
+				openTarget(pr.URL)
 			}
 		case <-it.mOpen.ClickedCh:
 			if pr := it.currentPR(); pr != nil {
-				_ = exec.Command("open", pr.URL).Start()
+				openTarget(pr.URL)
 			}
 		case <-it.mCopy.ClickedCh:
 			if pr := it.currentPR(); pr != nil {
@@ -298,11 +297,4 @@ func reviewGlyph(s github.ReviewState, draft bool) string {
 	default:
 		return "○"
 	}
-}
-
-// copyToClipboard writes text to the macOS clipboard via pbcopy.
-func copyToClipboard(text string) {
-	cmd := exec.Command("pbcopy")
-	cmd.Stdin = strings.NewReader(text)
-	_ = cmd.Run()
 }

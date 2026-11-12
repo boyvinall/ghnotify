@@ -38,6 +38,12 @@ xattr -d com.apple.quarantine /usr/local/bin/ghnotify
 ```
 -->
 
+## Windows
+
+Windows (amd64/arm64) builds are experimental and untested on real hardware. Build with
+`GOOS=windows go build -ldflags="-H=windowsgui" .`. Config lives in `%AppData%\ghnotify`,
+state in `%LocalAppData%\ghnotify`. Requires the [gh](https://cli.github.com/) CLI on `PATH`.
+
 ## Build/install from source
 
 Requires Go 1.25+ and Xcode Command Line Tools (`xcode-select --install`).

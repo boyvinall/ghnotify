@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -34,6 +35,7 @@ func ghBin() string {
 	for _, p := range []string{
 		"/opt/homebrew/bin/gh", // Apple Silicon
 		"/usr/local/bin/gh",    // Intel
+		filepath.Join(os.Getenv("ProgramFiles"), "GitHub CLI", "gh.exe"),
 	} {
 		if _, err := os.Stat(p); err == nil {
 			return p
@@ -42,10 +44,16 @@ func ghBin() string {
 	return "gh"
 }
 
+func ghCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command(ghBin(), args...)
+	hideWindow(cmd)
+	return cmd
+}
+
 // Servers returns all hosts currently authenticated with gh.
 func (m *Manager) Servers() []Server {
 	slog.Debug("discovering gh servers")
-	out, err := exec.Command(ghBin(), "auth", "status", "--json", "hosts").Output()
+	out, err := ghCommand("auth", "status", "--json", "hosts").Output()
 	if err != nil {
 		slog.Debug("gh auth status failed", "err", err)
 		return nil
@@ -57,7 +65,7 @@ func (m *Manager) Servers() []Server {
 
 // GetToken returns the token for host from the gh CLI.
 func (m *Manager) GetToken(host string) (string, error) {
-	out, err := exec.Command(ghBin(), "auth", "token", "--hostname", host).Output()
+	out, err := ghCommand("auth", "token", "--hostname", host).Output()
 	if err != nil {
 		return "", err
 	}

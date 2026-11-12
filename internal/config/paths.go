@@ -15,6 +15,12 @@ func appDir() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return filepath.Join(home, "Library", "Application Support", "ghnotify"), nil
+	case "windows":
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("config dir: %w", err)
+		}
+		return filepath.Join(dir, "ghnotify"), nil
 	default:
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 			return filepath.Join(xdg, "ghnotify"), nil
@@ -31,6 +37,11 @@ func dataDir() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return filepath.Join(home, "Library", "Application Support", "ghnotify"), nil
+	case "windows":
+		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+			return filepath.Join(dir, "ghnotify"), nil
+		}
+		return filepath.Join(home, "AppData", "Local", "ghnotify"), nil
 	default:
 		if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 			return filepath.Join(xdg, "ghnotify"), nil
